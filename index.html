@@ -82,6 +82,21 @@ var APP_URL = 'https://script.google.com/macros/s/AKfycbxe8ambv6GYT-HCDM8JVh90kn
   });
   window.addEventListener('offline', function () { if (!done) offline(); });
   window.addEventListener('online', function () { if (!done) location.reload(); });
+  /* v1.12.0 เก็บการเข้าสู่ระบบไว้ที่หน้านี้ด้วย (iPhone ล้างข้อมูลในกรอบด้านในบ่อย แต่ไม่ล้างของหน้าแอปบนหน้าจอโฮม)
+   * รับคำขอเฉพาะจากหน้าเว็บแอปของ Google ที่อยู่ "ข้างใน" หน้านี้เท่านั้น */
+  var TK_KEY = 'bb_token';
+  function lsGet() { try { return localStorage.getItem(TK_KEY) || ''; } catch (x) { return ''; } }
+  function lsSet(v) { try { if (v) localStorage.setItem(TK_KEY, v); else localStorage.removeItem(TK_KEY); } catch (x) { } }
+  window.addEventListener('message', function (e) {
+    var d = e.data;
+    if (!d || d.bb !== 'tok' || window.top !== window) return;
+    var host = ''; try { host = new URL(e.origin).hostname; } catch (x) { return; }
+    if (!/\.googleusercontent\.com$/.test(host)) return;
+    try { if (!e.source || e.source.top !== window) return; } catch (x) { return; }
+    if (d.op === 'get') e.source.postMessage({ bb: 'tok-reply', token: lsGet() }, e.origin);
+    else if (d.op === 'set' && /^[\w-]+\|\d+\|[0-9a-f]+$/.test(String(d.token || ''))) lsSet(String(d.token));
+    else if (d.op === 'clear') lsSet('');
+  });
   open();
   if ('serviceWorker' in navigator) { window.addEventListener('load', function () { navigator.serviceWorker.register('sw.js').catch(function () { }); }); }
 })();
