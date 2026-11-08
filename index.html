@@ -49,6 +49,15 @@
   <div class="dots" id="dots" aria-hidden="true"><i></i><i></i><i></i></div>
   <div id="msg"></div>
 </div>
+<script src="push-config.js"></script>
+<div id="pushSheet" style="display:none;position:fixed;inset:0;z-index:9;background:rgba(30,20,50,.55);align-items:flex-end;justify-content:center">
+  <div style="background:#fff;border-radius:20px 20px 0 0;padding:20px 18px calc(18px + env(safe-area-inset-bottom,0px));width:100%;max-width:480px;font-size:15px;line-height:1.55">
+    <b style="font-size:18px;display:block;margin-bottom:6px">🔔 เปิดการแจ้งเตือน</b>
+    <div id="pushTx">เมื่อมีสอนแทน คำสั่งใหม่ที่มีชื่อคุณ เรื่องรออนุมัติ หรือแจ้งซ่อม มือถือจะเด้งแจ้งเตือนและมีตัวเลขที่ไอคอนแอป</div>
+    <button type="button" id="pushYes" style="display:block;width:100%;margin-top:14px;min-height:48px;border:0;border-radius:12px;background:#6B47A6;color:#fff;font:inherit;font-weight:700">อนุญาตการแจ้งเตือน</button>
+    <button type="button" id="pushNo" style="display:block;width:100%;margin-top:8px;min-height:44px;border:0;border-radius:12px;background:#EDE4F8;color:#462A78;font:inherit;font-weight:700">ไว้ทีหลัง</button>
+  </div>
+</div>
 <script>
 /* ===== ตั้งค่า: ลิงก์เว็บแอปของระบบโรงเรียน (Apps Script → Deploy → ลิงก์ที่ลงท้ายด้วย /exec) =====
  * ถ้า Deploy ใหม่จนลิงก์เปลี่ยน ให้แก้บรรทัดนี้บรรทัดเดียว */
@@ -56,7 +65,8 @@ var APP_URL = 'https://script.google.com/macros/s/AKfycbxe8ambv6GYT-HCDM8JVh90kn
 
 (function () {
   var frame = document.getElementById('app'), splash = document.getElementById('splash'), msg = document.getElementById('msg');
-  var src = APP_URL + (APP_URL.indexOf('?') >= 0 ? '&' : '?') + 'app=1';
+  var goP = ''; try { goP = new URL(location.href).searchParams.get('go') || ''; } catch (x) { }   // แตะแจ้งเตือน → เปิดหน้าที่เกี่ยวข้อง
+  var src = APP_URL + (APP_URL.indexOf('?') >= 0 ? '&' : '?') + 'app=1' + (goP ? '&go=' + encodeURIComponent(goP) : '');
   var done = false, slow = null;
   function show(html) {
     document.getElementById('dots').style.display = 'none'; document.getElementById('sub').style.display = 'none';
@@ -97,6 +107,64 @@ var APP_URL = 'https://script.google.com/macros/s/AKfycbxe8ambv6GYT-HCDM8JVh90kn
     else if (d.op === 'set' && /^[\w-]+\|\d+\|[0-9a-f]+$/.test(String(d.token || ''))) lsSet(String(d.token));
     else if (d.op === 'clear') lsSet('');
   });
+  /* ===== v1.14.0 แจ้งเตือนเด้ง + ตัวเลขที่ไอคอน (Firebase Cloud Messaging) =====
+   * หน้าระบบโรงเรียน (กรอบด้านใน) ขอผ่าน postMessage → หน้านี้ (หน้าแอปบนหน้าจอโฮม) เป็นคนขอสิทธิ์/รับ token
+   * เพราะมือถือให้ขอสิทธิ์แจ้งเตือนได้จากหน้าบนสุดเท่านั้น */
+  var appWin = null, appOrigin = '';
+  var CFG = window.PUSH_CONFIG || {};
+  var configured = !!(CFG.apiKey && CFG.projectId && CFG.messagingSenderId && CFG.appId && CFG.vapidKey);
+  var standalone = (window.matchMedia && matchMedia('(display-mode: standalone)').matches) || navigator.standalone === true;
+  var ios = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  var supported = 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+  function toApp(m) { if (appWin) try { appWin.postMessage(m, appOrigin); } catch (x) { } }
+  function pushState() { return { bb: 'push-status', supported: supported, configured: configured, standalone: standalone, ios: ios, permission: supported ? Notification.permission : 'unsupported' }; }
+  function loadJs(u) { return new Promise(function (ok, bad) { var s = document.createElement('script'); s.src = u; s.onload = ok; s.onerror = function () { bad(new Error('โหลดไม่สำเร็จ ' + u)); }; document.head.appendChild(s); }); }
+  var FB = 'https://www.gstatic.com/firebasejs/10.12.2/';
+  function fbToken() {
+    return (window.firebase && firebase.messaging ? Promise.resolve() : loadJs(FB + 'firebase-app-compat.js').then(function () { return loadJs(FB + 'firebase-messaging-compat.js'); }))
+      .then(function () { if (!firebase.apps.length) firebase.initializeApp(CFG); return navigator.serviceWorker.ready; })
+      .then(function (reg) { return firebase.messaging().getToken({ vapidKey: CFG.vapidKey, serviceWorkerRegistration: reg }); });
+  }
+  function sendToken() {
+    fbToken().then(function (t) { if (t) toApp({ bb: 'push-token', token: t, device: (ios ? 'iPhone/iPad' : /Android/.test(navigator.userAgent) ? 'Android' : 'คอมพิวเตอร์') }); })
+      .catch(function (e) { toApp({ bb: 'push-error', msg: String(e && e.message || e) }); });
+  }
+  /* ตัวเลขที่ไอคอน: เก็บใน IndexedDB ให้ตัวช่วย (sw.js) บวกเพิ่มตอนแจ้งเตือนเข้า */
+  function idb(fn) { try { var r = indexedDB.open('bb-app', 1); r.onupgradeneeded = function () { r.result.createObjectStore('kv'); }; r.onsuccess = function () { try { fn(r.result.transaction('kv', 'readwrite').objectStore('kv')); } catch (x) { } }; } catch (x) { } }
+  function setBadge(n) {
+    n = Math.max(0, +n || 0);
+    idb(function (st) { st.put(n, 'badge'); });
+    try { if (n && navigator.setAppBadge) navigator.setAppBadge(n); else if (navigator.clearAppBadge) navigator.clearAppBadge(); } catch (x) { }
+  }
+  var sheet = document.getElementById('pushSheet');
+  document.getElementById('pushNo').onclick = function () { sheet.style.display = 'none'; };
+  document.getElementById('pushYes').onclick = function () {
+    sheet.style.display = 'none';
+    Notification.requestPermission().then(function (p) {   // ต้องเรียกจากการแตะบนหน้านี้โดยตรง
+      toApp(pushState());
+      if (p === 'granted') sendToken();
+    });
+  };
+  window.addEventListener('message', function (e) {
+    var d = e.data;
+    if (!d || (d.bb !== 'push' && d.bb !== 'tok') || window.top !== window) return;
+    var host = ''; try { host = new URL(e.origin).hostname; } catch (x) { return; }
+    if (!/\.googleusercontent\.com$/.test(host)) return;
+    try { if (!e.source || e.source.top !== window) return; } catch (x) { return; }
+    appWin = e.source; appOrigin = e.origin;
+    if (d.bb !== 'push') return;
+    if (d.op === 'status') toApp(pushState());
+    else if (d.op === 'enable') {
+      if (!supported || !configured) return toApp(pushState());
+      if (Notification.permission === 'granted') return sendToken();
+      if (Notification.permission === 'denied') return toApp(pushState());
+      sheet.style.display = 'flex';
+    }
+    else if (d.op === 'refresh' && supported && configured && Notification.permission === 'granted') sendToken();
+    else if (d.op === 'badge') setBadge(d.n);
+  });
+  /* แตะแจ้งเตือนตอนแอปเปิดอยู่ → sw.js ส่งมาบอก → ให้หน้าระบบไปหน้าที่เกี่ยวข้อง */
+  if ('serviceWorker' in navigator) navigator.serviceWorker.addEventListener('message', function (e) { if (e.data && e.data.bb === 'go') toApp({ bb: 'go', link: e.data.link }); });
   open();
   if ('serviceWorker' in navigator) { window.addEventListener('load', function () { navigator.serviceWorker.register('sw.js').catch(function () { }); }); }
 })();
